@@ -188,7 +188,7 @@ func (c *consumerGroup) Consume(ctx context.Context, topics []string, handler Co
 func (c *consumerGroup) retryNewSession(ctx context.Context, topics []string, handler ConsumerGroupHandler, retries int, refreshCoordinator bool) (*consumerGroupSession, error) {
 	select {
 	case <-c.closed:
-		return nil, ErrClosedConsumerGroup
+		return nil, fmt.Errorf("retryNewSession failed -> %w", ErrClosedConsumerGroup)
 	case <-time.After(c.config.Consumer.Group.Rebalance.Retry.Backoff):
 	}
 
@@ -206,7 +206,7 @@ func (c *consumerGroup) newSession(ctx context.Context, topics []string, handler
 	coordinator, err := c.client.Coordinator(c.groupID)
 	if err != nil {
 		if retries <= 0 {
-			return nil, err
+			return nil, fmt.Errorf("client Coordinator failed -> %w", err)
 		}
 
 		return c.retryNewSession(ctx, topics, handler, retries, true)
@@ -216,7 +216,7 @@ func (c *consumerGroup) newSession(ctx context.Context, topics []string, handler
 	join, err := c.joinGroupRequest(coordinator, topics)
 	if err != nil {
 		_ = coordinator.Close()
-		return nil, err
+		return nil, fmt.Errorf("joinGroupRequest failed -> %w", err)
 	}
 	switch join.Err {
 	case ErrNoError:
@@ -226,18 +226,18 @@ func (c *consumerGroup) newSession(ctx context.Context, topics []string, handler
 		return c.newSession(ctx, topics, handler, retries)
 	case ErrNotCoordinatorForConsumer: // retry after backoff with coordinator refresh
 		if retries <= 0 {
-			return nil, join.Err
+			return nil, fmt.Errorf("join.Err #1 -> %w", err)
 		}
 
 		return c.retryNewSession(ctx, topics, handler, retries, true)
 	case ErrRebalanceInProgress: // retry after backoff
 		if retries <= 0 {
-			return nil, join.Err
+			return nil, fmt.Errorf("join.Err #2 -> %w", err)
 		}
 
 		return c.retryNewSession(ctx, topics, handler, retries, false)
 	default:
-		return nil, join.Err
+		return nil, fmt.Errorf("join.Err #3 -> %w", err)
 	}
 
 	// Prepare distribution plan if we joined as the leader
@@ -245,12 +245,12 @@ func (c *consumerGroup) newSession(ctx context.Context, topics []string, handler
 	if join.LeaderId == join.MemberId {
 		members, err := join.GetMembers()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("join GetMembers failed -> %w", err)
 		}
 
 		plan, err = c.balance(members)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("balance member %v failed -> %w", members, err)
 		}
 	}
 
@@ -258,7 +258,7 @@ func (c *consumerGroup) newSession(ctx context.Context, topics []string, handler
 	groupRequest, err := c.syncGroupRequest(coordinator, plan, join.GenerationId)
 	if err != nil {
 		_ = coordinator.Close()
-		return nil, err
+		return nil, fmt.Errorf("syncGroupRequest failed -> %w", err)
 	}
 	switch groupRequest.Err {
 	case ErrNoError:
@@ -267,18 +267,18 @@ func (c *consumerGroup) newSession(ctx context.Context, topics []string, handler
 		return c.newSession(ctx, topics, handler, retries)
 	case ErrNotCoordinatorForConsumer: // retry after backoff with coordinator refresh
 		if retries <= 0 {
-			return nil, groupRequest.Err
+			return nil, fmt.Errorf("groupRequest.Err #1 -> %w", err)
 		}
 
 		return c.retryNewSession(ctx, topics, handler, retries, true)
 	case ErrRebalanceInProgress: // retry after backoff
 		if retries <= 0 {
-			return nil, groupRequest.Err
+			return nil, fmt.Errorf("groupRequest.Err #2 -> %w", err)
 		}
 
 		return c.retryNewSession(ctx, topics, handler, retries, false)
 	default:
-		return nil, groupRequest.Err
+		return nil, fmt.Errorf("groupRequest.Err #3 -> %w", err)
 	}
 
 	// Retrieve and sort claims
@@ -286,7 +286,7 @@ func (c *consumerGroup) newSession(ctx context.Context, topics []string, handler
 	if len(groupRequest.MemberAssignment) > 0 {
 		members, err := groupRequest.GetMemberAssignment()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("GetMemberAssignment failed -> %w", err)
 		}
 		claims = members.Topics
 		c.userData = members.UserData
@@ -552,7 +552,7 @@ func newConsumerGroupSession(ctx context.Context, parent *consumerGroup, claims 
 	// init offset manager
 	offsets, err := newOffsetManagerFromClient(parent.groupID, memberID, generationID, parent.client)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("newOffsetManagerFromClient failed -> %w", err)
 	}
 
 	// init context
@@ -581,7 +581,7 @@ func newConsumerGroupSession(ctx context.Context, parent *consumerGroup, claims 
 			pom, err := offsets.ManagePartition(topic, partition)
 			if err != nil {
 				_ = sess.release(false)
-				return nil, err
+				return nil, fmt.Errorf("ManagePartition failed -> %w", err)
 			}
 
 			// handle POM errors
@@ -596,7 +596,7 @@ func newConsumerGroupSession(ctx context.Context, parent *consumerGroup, claims 
 	// perform setup
 	if err := handler.Setup(sess); err != nil {
 		_ = sess.release(true)
-		return nil, err
+		return nil, fmt.Errorf("sess Setup failed -> %w", err)
 	}
 
 	// start consuming
